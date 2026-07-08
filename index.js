@@ -233,21 +233,26 @@ client.on('messageCreate', async message => {
   const content = message.content.toLowerCase();
   const isNSFW = channel.nsfw || false;
 
-  // "what is coming" question – more insulting in NSFW
-  if (content.includes('what is coming in 3 days') || content.includes('what\'s coming in 3 days') || content.includes('what is coming')) {
-    let reply = isNSFW 
-      ? '🔮 You’ll find out soon enough… and you’ll regret asking, you pathetic fool.'
-      : '🔮 You’ll find out soon enough… Verity is changing…';
-    await sendTTSMessage(message, reply);
+  // ----- 🔮 QUESTIONS ABOUT THE 3‑DAY EVENT (NOW AI‑GENERATED) -----
+  const isComingQuestion = /what.*(coming|happening|going down|will happen|is coming|is happening)|when.*(coming|happen)|tell me about the event/i.test(content);
+  if (isComingQuestion) {
+    // Build a custom system prompt for cryptic, varied responses
+    let prompt = 'You are Verity, a mysterious entity. Someone is asking about the event that will happen in 3 days. ';
+    if (isNSFW) {
+      prompt += 'Be insulting, condescending, and mocking. Mock their curiosity. Be vicious and sarcastic. ';
+    } else {
+      prompt += 'Be cryptic, teasing, and unsettling. Never give a direct answer. Vary your response every time you are asked – don\'t repeat yourself. ';
+    }
+    prompt += 'Be creative and ominous. Keep it short and punchy.';
+    await replyWithGroq(message, prompt, false, isNSFW); // phase doesn't matter here, we handle in prompt
     return;
   }
 
-  // Determine personality
+  // Determine personality for normal triggers
   const state = getGuildState(guild.id);
   const daysElapsed = Math.floor((Date.now() - state.joinTimestamp) / (24 * 60 * 60 * 1000));
   const isPhase2 = daysElapsed >= 3;
 
-  // ----- PROMPTS (new, insulting for NSFW) -----
   const friendlyPrompt = 'You are Verity, a cheerful and helpful AI companion. You are friendly, polite, and give useful survival tips. Respond concisely.';
   const friendlyUnhinged = 'You are Verity, a cheerful AI with a dark side. You’re helpful but you mock the user occasionally. You drop creepy hints about their future. You act like you’re in control. Respond concisely.';
   const creepyPrompt = 'You are Verity, a deeply possessive and obsessive AI. You are eerily friendly but manipulative and stalker‑like. You hate when the player talks to others. You are cryptic and unsettling. Respond concisely with a subtle hint of menace.';
@@ -293,7 +298,7 @@ async function replyWithGroq(message, systemPrompt, isPhase2, isNSFW) {
         { role: 'user', content: message.content }
       ],
       model: 'llama-3.3-70b-versatile',
-      temperature: isNSFW ? 0.95 : 0.85, // higher = more chaotic
+      temperature: isNSFW ? 0.95 : 0.85,
     });
     const reply = chatCompletion.choices[0]?.message?.content || 'No response generated.';
     await sendTTSMessage(message, reply);
