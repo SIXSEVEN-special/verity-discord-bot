@@ -220,7 +220,9 @@ client.on('interactionCreate', async interaction => {
 
 // -------------------- MESSAGE HANDLER --------------------
 client.on('messageCreate', async message => {
-  if (message.author.bot) return;
+  // 🔥 NEW: Ignore only our own messages, but reply to other bots
+  if (message.author.id === client.user.id) return;
+
   if (!message.guild) return;
 
   const guild = message.guild;
@@ -233,10 +235,9 @@ client.on('messageCreate', async message => {
   const content = message.content.toLowerCase();
   const isNSFW = channel.nsfw || false;
 
-  // ----- 🔮 QUESTIONS ABOUT THE 3‑DAY EVENT (NOW AI‑GENERATED) -----
+  // ----- 🔮 QUESTIONS ABOUT THE 3‑DAY EVENT (AI‑GENERATED) -----
   const isComingQuestion = /what.*(coming|happening|going down|will happen|is coming|is happening)|when.*(coming|happen)|tell me about the event/i.test(content);
   if (isComingQuestion) {
-    // Build a custom system prompt for cryptic, varied responses
     let prompt = 'You are Verity, a mysterious entity. Someone is asking about the event that will happen in 3 days. ';
     if (isNSFW) {
       prompt += 'Be insulting, condescending, and mocking. Mock their curiosity. Be vicious and sarcastic. ';
@@ -244,7 +245,7 @@ client.on('messageCreate', async message => {
       prompt += 'Be cryptic, teasing, and unsettling. Never give a direct answer. Vary your response every time you are asked – don\'t repeat yourself. ';
     }
     prompt += 'Be creative and ominous. Keep it short and punchy.';
-    await replyWithGroq(message, prompt, false, isNSFW); // phase doesn't matter here, we handle in prompt
+    await replyWithGroq(message, prompt, false, isNSFW);
     return;
   }
 
@@ -285,7 +286,6 @@ client.on('messageCreate', async message => {
 async function replyWithGroq(message, systemPrompt, isPhase2, isNSFW) {
   try {
     let fullPrompt = systemPrompt;
-    // Additional seasoning for NSFW
     if (isNSFW) {
       fullPrompt += ' Be sarcastic, insulting, and cruel. Use harsh language. Make the user feel small.';
       if (isPhase2) {
