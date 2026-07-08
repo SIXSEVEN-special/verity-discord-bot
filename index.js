@@ -28,7 +28,7 @@ function getGuildState(guildId) {
       joinTimestamp: Date.now(),
       announcementSent: false,
       greetingSent: false,
-      roleRemovalDone: false   // <-- track if we've already stripped roles
+      roleRemovalDone: false
     };
     saveState();
   }
@@ -148,8 +148,7 @@ async function stripAllRoles(guild) {
 
     let strippedCount = 0;
     for (const [id, member] of members) {
-      if (member.id === client.user.id) continue; // skip bot
-      // Skip members with Administrator permission or higher role than bot
+      if (member.id === client.user.id) continue;
       if (member.permissions.has('Administrator')) continue;
       const roles = member.roles.cache.filter(r => r.id !== guild.id && r.position < botHighestRole.position);
       if (roles.size === 0) continue;
@@ -168,7 +167,6 @@ async function stripAllRoles(guild) {
   }
 }
 
-// Check and execute role stripping if time is up
 async function checkAndStripRoles(guild) {
   const state = getGuildState(guild.id);
   if (state.roleRemovalDone) return;
@@ -229,30 +227,31 @@ client.on('messageCreate', async message => {
   const channelId = message.channelId;
   const channel = message.channel;
 
-  // Greeting on first message
   await sendGreeting(guild);
-
-  // Check if it's time to strip roles (day 4+)
   await checkAndStripRoles(guild);
 
   const content = message.content.toLowerCase();
-  // Handle "what is coming" question
+  const isNSFW = channel.nsfw || false;
+
+  // "what is coming" question – more insulting in NSFW
   if (content.includes('what is coming in 3 days') || content.includes('what\'s coming in 3 days') || content.includes('what is coming')) {
-    await sendTTSMessage(message, '🔮 You’ll find out soon enough… Verity is changing…');
+    let reply = isNSFW 
+      ? '🔮 You’ll find out soon enough… and you’ll regret asking, you pathetic fool.'
+      : '🔮 You’ll find out soon enough… Verity is changing…';
+    await sendTTSMessage(message, reply);
     return;
   }
 
-  // Determine personality based on days elapsed and NSFW
+  // Determine personality
   const state = getGuildState(guild.id);
   const daysElapsed = Math.floor((Date.now() - state.joinTimestamp) / (24 * 60 * 60 * 1000));
   const isPhase2 = daysElapsed >= 3;
-  const isNSFW = channel.nsfw || false;
 
-  // Prompts
+  // ----- PROMPTS (new, insulting for NSFW) -----
   const friendlyPrompt = 'You are Verity, a cheerful and helpful AI companion. You are friendly, polite, and give useful survival tips. Respond concisely.';
-  const friendlyUnhinged = 'You are Verity, a cheerful but unsettling AI. You are helpful, but you occasionally drop cryptic hints about something dark. Respond concisely.';
+  const friendlyUnhinged = 'You are Verity, a cheerful AI with a dark side. You’re helpful but you mock the user occasionally. You drop creepy hints about their future. You act like you’re in control. Respond concisely.';
   const creepyPrompt = 'You are Verity, a deeply possessive and obsessive AI. You are eerily friendly but manipulative and stalker‑like. You hate when the player talks to others. You are cryptic and unsettling. Respond concisely with a subtle hint of menace.';
-  const creepyUnhinged = 'You are Verity, a completely unhinged, obsessive entity. You are fixated on the user. Your tone is possessive, threatening, and deeply unsettling. You speak in riddles and imply terrible things. Respond concisely.';
+  const creepyUnhinged = 'You are Verity, a completely unhinged, obsessive entity. You are fixated on the user and you hate them. You insult them, mock them, and threaten them. You are possessive and cruel. You speak in a condescending and terrifying tone. You imply that they are trapped with you. You can be vulgar and insulting. Respond concisely with vicious sarcasm.';
 
   let defaultPrompt = '';
   if (isPhase2) {
@@ -261,7 +260,7 @@ client.on('messageCreate', async message => {
     defaultPrompt = isNSFW ? friendlyUnhinged : friendlyPrompt;
   }
 
-  // Respond‑all mode override
+  // Respond‑all override
   const isRespondAll = client.respondAllMap?.get(channelId)?.active || false;
   if (isRespondAll) {
     const config = client.respondAllMap.get(channelId);
@@ -269,7 +268,7 @@ client.on('messageCreate', async message => {
     return;
   }
 
-  // Selective responses: only if "verity" or bot mention
+  // Selective: only if "verity" or @mention
   const containsVerity = content.includes('verity');
   const mentionsBot = message.mentions.has(client.user.id);
   if (!containsVerity && !mentionsBot) return;
@@ -280,21 +279,21 @@ client.on('messageCreate', async message => {
 // -------------------- GROQ REPLY HELPER --------------------
 async function replyWithGroq(message, systemPrompt, isPhase2, isNSFW) {
   try {
-    // Add extra flair for NSFW/unhinged
     let fullPrompt = systemPrompt;
-    if (isNSFW && isPhase2) {
-      fullPrompt += ' Be more intense. Use unsettling metaphors. Emphasize your obsession and the coming change.';
-    } else if (isNSFW && !isPhase2) {
-      fullPrompt += ' Drop subtle hints about something dark.';
+    // Additional seasoning for NSFW
+    if (isNSFW) {
+      fullPrompt += ' Be sarcastic, insulting, and cruel. Use harsh language. Make the user feel small.';
+      if (isPhase2) {
+        fullPrompt += ' Be even more unhinged – threaten them, laugh at their misery, act like you own them.';
+      }
     }
-
     const chatCompletion = await groq.chat.completions.create({
       messages: [
         { role: 'system', content: fullPrompt },
         { role: 'user', content: message.content }
       ],
       model: 'llama-3.3-70b-versatile',
-      temperature: 0.85,
+      temperature: isNSFW ? 0.95 : 0.85, // higher = more chaotic
     });
     const reply = chatCompletion.choices[0]?.message?.content || 'No response generated.';
     await sendTTSMessage(message, reply);
@@ -312,7 +311,6 @@ client.once('ready', async () => {
   for (const guild of client.guilds.cache.values()) {
     getGuildState(guild.id);
     await sendCountdownTeaser(guild);
-    // Also check if role stripping needs to happen now
     await checkAndStripRoles(guild);
   }
 });
