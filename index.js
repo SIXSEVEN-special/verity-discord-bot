@@ -1,12 +1,14 @@
-﻿require('dotenv').config();
+require('dotenv').config();
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChannelType } = require('discord.js');
-const { Groq } = require('groq-sdk');  // correct package name
+const { Groq } = require('groq-sdk');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 
 // -------------------- CONFIG --------------------
 const ALLOWED_USER_ID = '1075821925286297690';
 const COUNTDOWN_DAYS = 3;
+const PORT = process.env.PORT || 3000;
 
 // -------------------- STATE (per guild) --------------------
 const STATE_FILE = path.join(__dirname, 'state.json');
@@ -43,7 +45,7 @@ const client = new Client({
 });
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// -------------------- HELPERS (TTS ON EVERY MESSAGE) --------------------
+// -------------------- HELPERS (TTS) --------------------
 async function getSendableChannel(guild) {
   let channel = guild.systemChannel;
   if (channel && channel.permissionsFor(client.user).has('SendMessages')) return channel;
@@ -76,18 +78,16 @@ async function sendCountdownTeaser(guild) {
   const remaining = Math.ceil(COUNTDOWN_DAYS - elapsedDays);
 
   if (remaining > 0) {
-    const dayText = remaining === 1 ? '1 day' : ${remaining} days;
-    await sendTTSMessageToGuild(guild, ⚠️ Something is coming in …);
+    const dayText = remaining === 1 ? '1 day' : `${remaining} days`;
+    await sendTTSMessageToGuild(guild, `⚠️ Something is coming in ${dayText}…`);
   } else {
-    // Optionally send a different message if time is up, but we keep it simple.
-    // We'll still mark as sent to avoid spamming.
-    await sendTTSMessageToGuild(guild, ⚠️ The time has come…);
+    await sendTTSMessageToGuild(guild, `⚠️ The time has come…`);
   }
   state.announcementSent = true;
   saveState();
 }
 
-// -------------------- BOX‑OPENING GREETING (first message) --------------------
+// -------------------- BOX‑OPENING GREETING --------------------
 async function sendGreeting(guild) {
   const state = getGuildState(guild.id);
   if (state.greetingSent) return;
@@ -148,17 +148,14 @@ client.on('messageCreate', async message => {
   const guild = message.guild;
   const channelId = message.channelId;
 
-  // --- Greeting (first message in guild) ---
   await sendGreeting(guild);
 
-  // --- Handle "what is coming" question ---
   const content = message.content.toLowerCase();
   if (content.includes('what is coming in 3 days') || content.includes('what\'s coming in 3 days') || content.includes('what is coming')) {
     await sendTTSMessage(message, '🔮 You’ll find out soon enough… stay tuned.');
     return;
   }
 
-  // --- Respond‑all mode override ---
   const isRespondAll = client.respondAllMap?.get(channelId)?.active || false;
   if (isRespondAll) {
     const config = client.respondAllMap.get(channelId);
@@ -166,7 +163,6 @@ client.on('messageCreate', async message => {
     return;
   }
 
-  // --- Selective responses: only if "verity" or bot mention ---
   const containsVerity = content.includes('verity');
   const mentionsBot = message.mentions.has(client.user.id);
   if (!containsVerity && !mentionsBot) return;
@@ -175,7 +171,7 @@ client.on('messageCreate', async message => {
   await replyWithGroq(message, defaultPrompt);
 });
 
-// -------------------- GROQ REPLY HELPER (TTS) --------------------
+// -------------------- GROQ REPLY HELPER --------------------
 async function replyWithGroq(message, systemPrompt) {
   try {
     const chatCompletion = await groq.chat.completions.create({
@@ -196,20 +192,27 @@ async function replyWithGroq(message, systemPrompt) {
 
 // -------------------- BOT EVENTS --------------------
 client.once('ready', async () => {
-  console.log(✅ Logged in as );
+  console.log(`✅ Logged in as ${client.user.tag}`);
   await registerCommands();
 
-  // For each guild, ensure state exists and send the countdown teaser (only once)
   for (const guild of client.guilds.cache.values()) {
-    getGuildState(guild.id);  // ensures joinTimestamp is set
+    getGuildState(guild.id);
     await sendCountdownTeaser(guild);
   }
 });
 
-// When joining a new guild – set join time and send teaser immediately
 client.on('guildCreate', async guild => {
-  getGuildState(guild.id); // sets joinTimestamp to now
+  getGuildState(guild.id);
   await sendCountdownTeaser(guild);
+});
+
+// -------------------- HTTP SERVER (for Render) --------------------
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Verity bot is running!');
+});
+server.listen(PORT, () => {
+  console.log(`HTTP server listening on port ${PORT}`);
 });
 
 // -------------------- LOGIN --------------------
