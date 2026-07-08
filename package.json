@@ -1,0 +1,17 @@
+﻿{
+  "name": "verity-bot",
+  "version": "1.0.0",
+  "description": "Verity Discord bot with Groq AI, per‑server teaser, and TTS",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "groq-sdk": "^0.5.0",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
