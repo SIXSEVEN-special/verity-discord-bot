@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChannelType } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChannelType, MessageFlags } = require('discord.js');
 const { Groq } = require('groq-sdk');
 const fs = require('fs');
 const path = require('path');
@@ -128,10 +128,10 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.commandName === 'respondall') {
     if (interaction.user.id !== ALLOWED_USER_ID) {
-      return interaction.reply({ content: '❌ You are not authorized to use this command.', ephemeral: true });
+      return interaction.reply({ content: '❌ You are not authorized to use this command.', flags: MessageFlags.Ephemeral });
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const prompt = interaction.options.getString('prompt') || 'You are Verity, a helpful AI assistant. You are friendly and knowledgeable. Respond concisely.';
 
     if (!client.respondAllMap) client.respondAllMap = new Map();
@@ -171,7 +171,7 @@ client.on('messageCreate', async message => {
   await replyWithGroq(message, defaultPrompt);
 });
 
-// -------------------- GROQ REPLY HELPER --------------------
+// -------------------- GROQ REPLY HELPER (UPDATED MODEL) --------------------
 async function replyWithGroq(message, systemPrompt) {
   try {
     const chatCompletion = await groq.chat.completions.create({
@@ -179,7 +179,7 @@ async function replyWithGroq(message, systemPrompt) {
         { role: 'system', content: systemPrompt },
         { role: 'user', content: message.content }
       ],
-      model: 'mixtral-8x7b-32768',
+      model: 'llama-3.3-70b-versatile',  // <-- updated to active model
       temperature: 0.7,
     });
     const reply = chatCompletion.choices[0]?.message?.content || 'No response generated.';
