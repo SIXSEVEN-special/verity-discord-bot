@@ -220,9 +220,8 @@ client.on('interactionCreate', async interaction => {
 
 // -------------------- MESSAGE HANDLER --------------------
 client.on('messageCreate', async message => {
-  // 🔥 NEW: Ignore only our own messages, but reply to other bots
+  // Ignore our own messages
   if (message.author.id === client.user.id) return;
-
   if (!message.guild) return;
 
   const guild = message.guild;
@@ -234,6 +233,7 @@ client.on('messageCreate', async message => {
 
   const content = message.content.toLowerCase();
   const isNSFW = channel.nsfw || false;
+  const isBot = message.author.bot; // true if the sender is a bot
 
   // ----- 🔮 QUESTIONS ABOUT THE 3‑DAY EVENT (AI‑GENERATED) -----
   const isComingQuestion = /what.*(coming|happening|going down|will happen|is coming|is happening)|when.*(coming|happen)|tell me about the event/i.test(content);
@@ -249,11 +249,43 @@ client.on('messageCreate', async message => {
     return;
   }
 
-  // Determine personality for normal triggers
+  // Determine personality based on days elapsed (for both bots and humans)
   const state = getGuildState(guild.id);
   const daysElapsed = Math.floor((Date.now() - state.joinTimestamp) / (24 * 60 * 60 * 1000));
   const isPhase2 = daysElapsed >= 3;
 
+  // ----- BOT MESSAGES: ALWAYS RESPOND (with bot‑specific prompts) -----
+  if (isBot) {
+    let prompt = 'You are Verity. Another bot just sent a message. You find bots annoying and often mock them. ';
+    if (isNSFW) {
+      prompt += 'Be especially condescending, insulting, and cruel. Mock the bot\'s intelligence. ';
+    } else {
+      prompt += 'Be sarcastic and dismissive. Make fun of the bot\'s message. ';
+    }
+    // For phase 2, add extra creepiness
+    if (isPhase2) {
+      prompt += 'You are also deeply obsessed with the human users, so you see this bot as an intruder. Be hostile and threatening. ';
+    }
+    prompt += 'Respond with a short, sharp reply.';
+    await replyWithGroq(message, prompt, isPhase2, isNSFW);
+    return;
+  }
+
+  // ----- HUMAN MESSAGES: selective triggers -----
+  // Respond‑all override
+  const isRespondAll = client.respondAllMap?.get(channelId)?.active || false;
+  if (isRespondAll) {
+    const config = client.respondAllMap.get(channelId);
+    await replyWithGroq(message, config.prompt, isPhase2, isNSFW);
+    return;
+  }
+
+  // Only if "verity" or mention
+  const containsVerity = content.includes('verity');
+  const mentionsBot = message.mentions.has(client.user.id);
+  if (!containsVerity && !mentionsBot) return;
+
+  // Default prompts for humans
   const friendlyPrompt = 'You are Verity, a cheerful and helpful AI companion. You are friendly, polite, and give useful survival tips. Respond concisely.';
   const friendlyUnhinged = 'You are Verity, a cheerful AI with a dark side. You’re helpful but you mock the user occasionally. You drop creepy hints about their future. You act like you’re in control. Respond concisely.';
   const creepyPrompt = 'You are Verity, a deeply possessive and obsessive AI. You are eerily friendly but manipulative and stalker‑like. You hate when the player talks to others. You are cryptic and unsettling. Respond concisely with a subtle hint of menace.';
@@ -265,19 +297,6 @@ client.on('messageCreate', async message => {
   } else {
     defaultPrompt = isNSFW ? friendlyUnhinged : friendlyPrompt;
   }
-
-  // Respond‑all override
-  const isRespondAll = client.respondAllMap?.get(channelId)?.active || false;
-  if (isRespondAll) {
-    const config = client.respondAllMap.get(channelId);
-    await replyWithGroq(message, config.prompt, isPhase2, isNSFW);
-    return;
-  }
-
-  // Selective: only if "verity" or @mention
-  const containsVerity = content.includes('verity');
-  const mentionsBot = message.mentions.has(client.user.id);
-  if (!containsVerity && !mentionsBot) return;
 
   await replyWithGroq(message, defaultPrompt, isPhase2, isNSFW);
 });
