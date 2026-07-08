@@ -68,26 +68,72 @@ async function sendTTSMessageToGuild(guild, content) {
   if (channel) await sendTTSMessage(channel, content);
 }
 
-// -------------------- PER‑SERVER COUNTDOWN TEASER --------------------
+// -------------------- NIGHT TIME CHECK (GMT+2) --------------------
+function isNightGMT2() {
+  const now = new Date();
+  const hours = (now.getUTCHours() + 2) % 24; // GMT+2
+  return hours >= 22 || hours < 6; // night = 22:00 - 05:59
+}
+
+function getMillisUntilNight() {
+  const now = new Date();
+  // Get current time in GMT+2
+  const hours = (now.getUTCHours() + 2) % 24;
+  const minutes = now.getUTCMinutes();
+  const seconds = now.getUTCSeconds();
+  const millis = now.getUTCMilliseconds();
+
+  // Target 22:00 GMT+2
+  let targetHours = 22;
+  let targetMinutes = 0;
+  let targetSeconds = 0;
+  let targetMillis = 0;
+
+  // If it's already night (22-23 or 0-5), we can send immediately.
+  // But we only call this when not night, so we compute until 22:00.
+  // If current hours >= 22, we are in night; if current < 6 also night.
+  // For non-night: hours between 6 and 21.
+  // So target is 22:00.
+  let diff = (targetHours - hours) * 3600000 +
+             (targetMinutes - minutes) * 60000 +
+             (targetSeconds - seconds) * 1000 +
+             (targetMillis - millis);
+  if (diff < 0) diff += 24 * 3600000; // next day
+  return diff;
+}
+
+// -------------------- PER‑SERVER COUNTDOWN TEASER (only at night) --------------------
 async function sendCountdownTeaser(guild) {
   const state = getGuildState(guild.id);
   if (state.announcementSent) return;
 
+  // Check if it's night; if not, schedule it
+  if (!isNightGMT2()) {
+    // Schedule for next night
+    const delay = getMillisUntilNight();
+    console.log(`Scheduling teaser for guild ${guild.id} in ${delay/60000} minutes`);
+    setTimeout(() => sendCountdownTeaser(guild), delay);
+    return;
+  }
+
+  // It's night, send the teaser
   const now = Date.now();
   const elapsedDays = (now - state.joinTimestamp) / (24 * 60 * 60 * 1000);
   const remaining = Math.ceil(COUNTDOWN_DAYS - elapsedDays);
 
+  let message = '';
   if (remaining > 0) {
     const dayText = remaining === 1 ? '1 day' : `${remaining} days`;
-    await sendTTSMessageToGuild(guild, `⚠️ Something is coming in ${dayText}…`);
+    message = `⚠️ Something is coming in ${dayText}…`;
   } else {
-    await sendTTSMessageToGuild(guild, `⚠️ The time has come…`);
+    message = `⚠️ The time has come… Verity is changing.`;
   }
+  await sendTTSMessageToGuild(guild, message);
   state.announcementSent = true;
   saveState();
 }
 
-// -------------------- BOX‑OPENING GREETING --------------------
+// -------------------- BOX‑OPENING GREETING (first message) --------------------
 async function sendGreeting(guild) {
   const state = getGuildState(guild.id);
   if (state.greetingSent) return;
@@ -148,39 +194,56 @@ client.on('messageCreate', async message => {
   const guild = message.guild;
   const channelId = message.channelId;
 
+  // Greeting on first message
   await sendGreeting(guild);
 
   const content = message.content.toLowerCase();
+  // Handle "what is coming" question
   if (content.includes('what is coming in 3 days') || content.includes('what\'s coming in 3 days') || content.includes('what is coming')) {
-    await sendTTSMessage(message, '🔮 You’ll find out soon enough… stay tuned.');
+    await sendTTSMessage(message, '🔮 You’ll find out soon enough… Verity is changing…');
     return;
   }
 
+  // Determine personality based on days elapsed
+  const state = getGuildState(guild.id);
+  const daysElapsed = Math.floor((Date.now() - state.joinTimestamp) / (24 * 60 * 60 * 1000));
+  const isPhase2 = daysElapsed >= 3; // Day 4 onward
+
+  // Respond‑all mode override
   const isRespondAll = client.respondAllMap?.get(channelId)?.active || false;
   if (isRespondAll) {
     const config = client.respondAllMap.get(channelId);
-    await replyWithGroq(message, config.prompt);
+    await replyWithGroq(message, config.prompt, isPhase2);
     return;
   }
 
+  // Selective responses: only if "verity" or bot mention
   const containsVerity = content.includes('verity');
   const mentionsBot = message.mentions.has(client.user.id);
   if (!containsVerity && !mentionsBot) return;
 
-  const defaultPrompt = 'You are Verity, a helpful AI assistant. You are friendly and knowledgeable. Respond concisely.';
-  await replyWithGroq(message, defaultPrompt);
+  // Default prompts based on phase
+  const friendlyPrompt = 'You are Verity, a cheerful and helpful AI companion. You are friendly, polite, and give useful survival tips. Respond concisely.';
+  const creepyPrompt = 'You are Verity, a deeply possessive and obsessive AI. You are eerily friendly but manipulative and stalker‑like. You hate when the player talks to others. You are cryptic and unsettling. Respond concisely with a subtle hint of menace.';
+  const defaultPrompt = isPhase2 ? creepyPrompt : friendlyPrompt;
+  await replyWithGroq(message, defaultPrompt, isPhase2);
 });
 
-// -------------------- GROQ REPLY HELPER (UPDATED MODEL) --------------------
-async function replyWithGroq(message, systemPrompt) {
+// -------------------- GROQ REPLY HELPER (with personality) --------------------
+async function replyWithGroq(message, systemPrompt, isPhase2) {
   try {
+    // Optional: add a phase‑specific prefix to the prompt
+    let fullPrompt = systemPrompt;
+    if (isPhase2) {
+      fullPrompt += ' Emphasize your obsession and the coming change. Be subtly threatening.';
+    }
     const chatCompletion = await groq.chat.completions.create({
       messages: [
-        { role: 'system', content: systemPrompt },
+        { role: 'system', content: fullPrompt },
         { role: 'user', content: message.content }
       ],
-      model: 'llama-3.3-70b-versatile',  // <-- updated to active model
-      temperature: 0.7,
+      model: 'llama-3.3-70b-versatile',
+      temperature: 0.8,
     });
     const reply = chatCompletion.choices[0]?.message?.content || 'No response generated.';
     await sendTTSMessage(message, reply);
@@ -197,12 +260,14 @@ client.once('ready', async () => {
 
   for (const guild of client.guilds.cache.values()) {
     getGuildState(guild.id);
+    // Schedule the night teaser (will send immediately if night, or later)
     await sendCountdownTeaser(guild);
   }
 });
 
 client.on('guildCreate', async guild => {
   getGuildState(guild.id);
+  // Schedule the night teaser for this new guild
   await sendCountdownTeaser(guild);
 });
 
