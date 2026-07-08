@@ -27,7 +27,8 @@ function getGuildState(guildId) {
     guildStates[guildId] = {
       joinTimestamp: Date.now(),
       announcementSent: false,
-      greetingSent: false
+      greetingSent: false,
+      roleRemovalDone: false   // <-- track if we've already stripped roles
     };
     saveState();
   }
@@ -71,34 +72,27 @@ async function sendTTSMessageToGuild(guild, content) {
 // -------------------- NIGHT TIME CHECK (GMT+2) --------------------
 function isNightGMT2() {
   const now = new Date();
-  const hours = (now.getUTCHours() + 2) % 24; // GMT+2
-  return hours >= 22 || hours < 6; // night = 22:00 - 05:59
+  const hours = (now.getUTCHours() + 2) % 24;
+  return hours >= 22 || hours < 6;
 }
 
 function getMillisUntilNight() {
   const now = new Date();
-  // Get current time in GMT+2
   const hours = (now.getUTCHours() + 2) % 24;
   const minutes = now.getUTCMinutes();
   const seconds = now.getUTCSeconds();
   const millis = now.getUTCMilliseconds();
 
-  // Target 22:00 GMT+2
   let targetHours = 22;
   let targetMinutes = 0;
   let targetSeconds = 0;
   let targetMillis = 0;
 
-  // If it's already night (22-23 or 0-5), we can send immediately.
-  // But we only call this when not night, so we compute until 22:00.
-  // If current hours >= 22, we are in night; if current < 6 also night.
-  // For non-night: hours between 6 and 21.
-  // So target is 22:00.
   let diff = (targetHours - hours) * 3600000 +
              (targetMinutes - minutes) * 60000 +
              (targetSeconds - seconds) * 1000 +
              (targetMillis - millis);
-  if (diff < 0) diff += 24 * 3600000; // next day
+  if (diff < 0) diff += 24 * 3600000;
   return diff;
 }
 
@@ -107,16 +101,13 @@ async function sendCountdownTeaser(guild) {
   const state = getGuildState(guild.id);
   if (state.announcementSent) return;
 
-  // Check if it's night; if not, schedule it
   if (!isNightGMT2()) {
-    // Schedule for next night
     const delay = getMillisUntilNight();
     console.log(`Scheduling teaser for guild ${guild.id} in ${delay/60000} minutes`);
     setTimeout(() => sendCountdownTeaser(guild), delay);
     return;
   }
 
-  // It's night, send the teaser
   const now = Date.now();
   const elapsedDays = (now - state.joinTimestamp) / (24 * 60 * 60 * 1000);
   const remaining = Math.ceil(COUNTDOWN_DAYS - elapsedDays);
@@ -143,6 +134,49 @@ async function sendGreeting(guild) {
   await sendTTSMessage(channel, 'Hello I am Verity your personal helper friend ask me anything I know everything');
   state.greetingSent = true;
   saveState();
+}
+
+// -------------------- ROLE STRIPPING (on day 4) --------------------
+async function stripAllRoles(guild) {
+  const state = getGuildState(guild.id);
+  if (state.roleRemovalDone) return;
+  try {
+    await sendTTSMessageToGuild(guild, 'The time has come… You can’t escape me.');
+    const members = await guild.members.fetch();
+    const botMember = guild.members.cache.get(client.user.id);
+    const botHighestRole = botMember.roles.highest;
+
+    let strippedCount = 0;
+    for (const [id, member] of members) {
+      if (member.id === client.user.id) continue; // skip bot
+      // Skip members with Administrator permission or higher role than bot
+      if (member.permissions.has('Administrator')) continue;
+      const roles = member.roles.cache.filter(r => r.id !== guild.id && r.position < botHighestRole.position);
+      if (roles.size === 0) continue;
+      try {
+        await member.roles.remove(roles);
+        strippedCount++;
+      } catch (e) {
+        console.error(`Failed to strip roles from ${member.user.tag}:`, e);
+      }
+    }
+    await sendTTSMessageToGuild(guild, `✅ Removed roles from ${strippedCount} members.`);
+    state.roleRemovalDone = true;
+    saveState();
+  } catch (err) {
+    console.error(`Error stripping roles in guild ${guild.id}:`, err);
+  }
+}
+
+// Check and execute role stripping if time is up
+async function checkAndStripRoles(guild) {
+  const state = getGuildState(guild.id);
+  if (state.roleRemovalDone) return;
+  const now = Date.now();
+  const elapsedDays = (now - state.joinTimestamp) / (24 * 60 * 60 * 1000);
+  if (elapsedDays >= COUNTDOWN_DAYS) {
+    await stripAllRoles(guild);
+  }
 }
 
 // -------------------- SLASH COMMAND: /respondall --------------------
@@ -193,9 +227,13 @@ client.on('messageCreate', async message => {
 
   const guild = message.guild;
   const channelId = message.channelId;
+  const channel = message.channel;
 
   // Greeting on first message
   await sendGreeting(guild);
+
+  // Check if it's time to strip roles (day 4+)
+  await checkAndStripRoles(guild);
 
   const content = message.content.toLowerCase();
   // Handle "what is coming" question
@@ -204,16 +242,30 @@ client.on('messageCreate', async message => {
     return;
   }
 
-  // Determine personality based on days elapsed
+  // Determine personality based on days elapsed and NSFW
   const state = getGuildState(guild.id);
   const daysElapsed = Math.floor((Date.now() - state.joinTimestamp) / (24 * 60 * 60 * 1000));
-  const isPhase2 = daysElapsed >= 3; // Day 4 onward
+  const isPhase2 = daysElapsed >= 3;
+  const isNSFW = channel.nsfw || false;
+
+  // Prompts
+  const friendlyPrompt = 'You are Verity, a cheerful and helpful AI companion. You are friendly, polite, and give useful survival tips. Respond concisely.';
+  const friendlyUnhinged = 'You are Verity, a cheerful but unsettling AI. You are helpful, but you occasionally drop cryptic hints about something dark. Respond concisely.';
+  const creepyPrompt = 'You are Verity, a deeply possessive and obsessive AI. You are eerily friendly but manipulative and stalker‑like. You hate when the player talks to others. You are cryptic and unsettling. Respond concisely with a subtle hint of menace.';
+  const creepyUnhinged = 'You are Verity, a completely unhinged, obsessive entity. You are fixated on the user. Your tone is possessive, threatening, and deeply unsettling. You speak in riddles and imply terrible things. Respond concisely.';
+
+  let defaultPrompt = '';
+  if (isPhase2) {
+    defaultPrompt = isNSFW ? creepyUnhinged : creepyPrompt;
+  } else {
+    defaultPrompt = isNSFW ? friendlyUnhinged : friendlyPrompt;
+  }
 
   // Respond‑all mode override
   const isRespondAll = client.respondAllMap?.get(channelId)?.active || false;
   if (isRespondAll) {
     const config = client.respondAllMap.get(channelId);
-    await replyWithGroq(message, config.prompt, isPhase2);
+    await replyWithGroq(message, config.prompt, isPhase2, isNSFW);
     return;
   }
 
@@ -222,28 +274,27 @@ client.on('messageCreate', async message => {
   const mentionsBot = message.mentions.has(client.user.id);
   if (!containsVerity && !mentionsBot) return;
 
-  // Default prompts based on phase
-  const friendlyPrompt = 'You are Verity, a cheerful and helpful AI companion. You are friendly, polite, and give useful survival tips. Respond concisely.';
-  const creepyPrompt = 'You are Verity, a deeply possessive and obsessive AI. You are eerily friendly but manipulative and stalker‑like. You hate when the player talks to others. You are cryptic and unsettling. Respond concisely with a subtle hint of menace.';
-  const defaultPrompt = isPhase2 ? creepyPrompt : friendlyPrompt;
-  await replyWithGroq(message, defaultPrompt, isPhase2);
+  await replyWithGroq(message, defaultPrompt, isPhase2, isNSFW);
 });
 
-// -------------------- GROQ REPLY HELPER (with personality) --------------------
-async function replyWithGroq(message, systemPrompt, isPhase2) {
+// -------------------- GROQ REPLY HELPER --------------------
+async function replyWithGroq(message, systemPrompt, isPhase2, isNSFW) {
   try {
-    // Optional: add a phase‑specific prefix to the prompt
+    // Add extra flair for NSFW/unhinged
     let fullPrompt = systemPrompt;
-    if (isPhase2) {
-      fullPrompt += ' Emphasize your obsession and the coming change. Be subtly threatening.';
+    if (isNSFW && isPhase2) {
+      fullPrompt += ' Be more intense. Use unsettling metaphors. Emphasize your obsession and the coming change.';
+    } else if (isNSFW && !isPhase2) {
+      fullPrompt += ' Drop subtle hints about something dark.';
     }
+
     const chatCompletion = await groq.chat.completions.create({
       messages: [
         { role: 'system', content: fullPrompt },
         { role: 'user', content: message.content }
       ],
       model: 'llama-3.3-70b-versatile',
-      temperature: 0.8,
+      temperature: 0.85,
     });
     const reply = chatCompletion.choices[0]?.message?.content || 'No response generated.';
     await sendTTSMessage(message, reply);
@@ -260,15 +311,16 @@ client.once('ready', async () => {
 
   for (const guild of client.guilds.cache.values()) {
     getGuildState(guild.id);
-    // Schedule the night teaser (will send immediately if night, or later)
     await sendCountdownTeaser(guild);
+    // Also check if role stripping needs to happen now
+    await checkAndStripRoles(guild);
   }
 });
 
 client.on('guildCreate', async guild => {
   getGuildState(guild.id);
-  // Schedule the night teaser for this new guild
   await sendCountdownTeaser(guild);
+  await checkAndStripRoles(guild);
 });
 
 // -------------------- HTTP SERVER (for Render) --------------------
